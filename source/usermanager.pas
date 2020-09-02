@@ -327,26 +327,42 @@ begin
     tmp := FConnection.GetSessionVariable('skip_name_resolve');
     SkipNameResolve := LowerCase(tmp) = 'on';
 
-    FConnection.Query('FLUSH PRIVILEGES');
+    if (!FConnection.Parameters.IsAnyPostgreSQL) then
+      FConnection.Query('FLUSH PRIVILEGES');
+      // Peek into user table structure, and find out where the password hash is stored
+     UserTableColumns := FConnection.GetCol('SHOW COLUMNS FROM '+FConnection.QuoteIdent('mysql')+'.'+FConnection.QuoteIdent('user'));
+     HasPassword := UserTableColumns.IndexOf('password') > -1;
+      HasAuthString := UserTableColumns.IndexOf('authentication_string') > -1;
+      if HasPassword and (not HasAuthString) then
+        PasswordExpr := 'password'
+      else if (not HasPassword) and HasAuthString then
+        PasswordExpr := 'authentication_string'
+      else if HasPassword and HasAuthString then
+        PasswordExpr := 'IF(LENGTH(password)>0, password, authentication_string)'
+      else
+        Raise Exception.Create(_('No password hash column available'));
+      PasswordExpr := PasswordExpr + ' AS ' + FConnection.QuoteIdent('password');
 
-    // Peek into user table structure, and find out where the password hash is stored
-    UserTableColumns := FConnection.GetCol('SHOW COLUMNS FROM '+FConnection.QuoteIdent('mysql')+'.'+FConnection.QuoteIdent('user'));
-    HasPassword := UserTableColumns.IndexOf('password') > -1;
-    HasAuthString := UserTableColumns.IndexOf('authentication_string') > -1;
-    if HasPassword and (not HasAuthString) then
-      PasswordExpr := 'password'
-    else if (not HasPassword) and HasAuthString then
-      PasswordExpr := 'authentication_string'
-    else if HasPassword and HasAuthString then
-      PasswordExpr := 'IF(LENGTH(password)>0, password, authentication_string)'
+      Users := FConnection.GetResults(
+        'SELECT '+FConnection.QuoteIdent('user')+', '+FConnection.QuoteIdent('host')+', '+PasswordExpr+' '+
+        'FROM '+FConnection.QuoteIdent('mysql')+'.'+FConnection.QuoteIdent('user')
+        );
     else
-      Raise Exception.Create(_('No password hash column available'));
-    PasswordExpr := PasswordExpr + ' AS ' + FConnection.QuoteIdent('password');
+//TODO total nonsense, just a place holder
+      UserTableColumns := FConnection.GetCol('SHOW COLUMNS FROM '+FConnection.QuoteIdent('pg_catalog')+'.'+FConnection.QuoteIdent('pg_user'));
+      HasPassword := UserTableColumns.IndexOf('passwd') > -1;
+      if HasPassword then
+        PasswordExpr := 'passwd'
+      else
+        Raise Exception.Create(_('No password hash column available'));
+      PasswordExpr := PasswordExpr + ' AS ' + FConnection.QuoteIdent('password');
 
-    Users := FConnection.GetResults(
-      'SELECT '+FConnection.QuoteIdent('user')+', '+FConnection.QuoteIdent('host')+', '+PasswordExpr+' '+
-      'FROM '+FConnection.QuoteIdent('mysql')+'.'+FConnection.QuoteIdent('user')
-      );
+      Users := FConnection.GetResults(
+        'SELECT '+FConnection.QuoteIdent('usename')+', '+FConnection.QuoteIdent('useconfig')+', '+PasswordExpr+' '+
+        'FROM '+FConnection.QuoteIdent('pg_catalog')+'.'+FConnection.QuoteIdent('pg_user')
+        );
+    end;
+
     FUsers := TUserList.Create(True);
     while not Users.Eof do begin
       U := TUser.Create;
